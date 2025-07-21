@@ -10,10 +10,15 @@ import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
 import React from 'react'
 import { chainsToTSender, erc20Abi, tsenderAbi } from '@/constants'
+import { useChainId, useConfig, useAccount } from 'wagmi'
+import { readContract } from '@wagmi/core'
 
 export function AirdropForm() {
   const [totalWei, setTotalWei] = useState('0')
   const [totalTokens, setTotalTokens] = useState('0.00')
+  const chainId = useChainId()
+  const config = useConfig()
+  const account = useAccount()
 
   const schema = yup.object().shape({
     tokenAddress: yup
@@ -114,7 +119,33 @@ export function AirdropForm() {
     }
   }, [recipients, amounts])
 
-  const onSubmit = (data: any) => {}
+  const getApprovedAmount = async (
+    tSenderAddress: string | null,
+    tokenAddress: string
+  ): Promise<number> => {
+    if (!tSenderAddress) {
+      alert('No address found, please use a supported chain')
+      return 0
+    }
+
+    const response = await readContract(config, {
+      abi: erc20Abi,
+      address: tokenAddress as `0x${string}`,
+      functionName: 'allowance',
+      args: [account.address, tSenderAddress as `0x${string}`],
+    })
+
+    return response as number
+  }
+
+  const onSubmit = async (data: any) => {
+    const tSenderAddress = chainsToTSender[chainId]['tsender']
+    const approvedAmount = await getApprovedAmount(
+      tSenderAddress,
+      data.tokenAddress
+    )
+    console.log(approvedAmount)
+  }
 
   return (
     <form
