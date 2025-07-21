@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useState } from 'react'
+import { useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
@@ -12,10 +12,10 @@ import React from 'react'
 import { chainsToTSender, erc20Abi, tsenderAbi } from '@/constants'
 import { useChainId, useConfig, useAccount } from 'wagmi'
 import { readContract } from '@wagmi/core'
+import { parseListInput } from '@/utils/parsetInput/parse-input'
+import { AirdropFormData } from '@/types/air-drop-form-data'
 
 export function AirdropForm() {
-  const [totalWei, setTotalWei] = useState('0')
-  const [totalTokens, setTotalTokens] = useState('0.00')
   const chainId = useChainId()
   const config = useConfig()
   const account = useAccount()
@@ -33,11 +33,7 @@ export function AirdropForm() {
         'Please enter valid Recipient addresses (comma or newline separated).',
         (value) => {
           if (!value) return false
-          const arr: string[] = value
-            .replace(/\n/g, ',')
-            .split(',')
-            .map((r: string) => r.trim())
-            .filter(Boolean)
+          const arr: string[] = parseListInput(value)
           return (
             arr.length > 0 &&
             arr.every((r: string) => /^0x[0-9A-Fa-f]{40}$/.test(r))
@@ -53,16 +49,8 @@ export function AirdropForm() {
         function (value) {
           const { recipients } = this.parent
           if (!value || !recipients) return false
-          const recipientArr = recipients
-            .replace(/\n/g, ',')
-            .split(',')
-            .map((r: string) => r.trim())
-            .filter(Boolean)
-          const amountArr = value
-            .replace(/\n/g, ',')
-            .split(',')
-            .map((a) => a.trim())
-            .filter(Boolean)
+          const recipientArr = parseListInput(recipients)
+          const amountArr = parseListInput(value)
           return (
             amountArr.length === recipientArr.length &&
             amountArr.every((a) => !isNaN(Number(a)) && Number(a) > 0)
@@ -77,7 +65,6 @@ export function AirdropForm() {
     handleSubmit,
     formState: { errors },
     watch,
-    setValue,
   } = useForm({
     resolver: yupResolver(schema),
     defaultValues: {
@@ -91,31 +78,23 @@ export function AirdropForm() {
   const recipients = watch('recipients')
   const amounts = watch('amounts')
 
-  React.useEffect(() => {
-    const recipientArray = recipients
-      ? recipients
-          .replace(/\n/g, ',')
-          .split(',')
-          .map((r: string) => r.trim())
-          .filter(Boolean)
-      : []
-    const amountArray = amounts
-      ? amounts
-          .replace(/\n/g, ',')
-          .split(',')
-          .map((a) => a.trim())
-          .filter(Boolean)
-      : []
+  const { totalWei, totalTokens } = useMemo(() => {
+    const recipientArray = parseListInput(recipients)
+    const amountArray = parseListInput(amounts)
     if (
       amountArray.length === recipientArray.length &&
       amountArray.every((a) => !isNaN(Number(a)) && Number(a) > 0)
     ) {
       const totalWeiValue = amountArray.reduce((sum, a) => sum + Number(a), 0)
-      setTotalWei(totalWeiValue.toString())
-      setTotalTokens((totalWeiValue / 1e18).toFixed(2))
+      return {
+        totalWei: totalWeiValue.toString(),
+        totalTokens: (totalWeiValue / 1e18).toFixed(2),
+      }
     } else {
-      setTotalWei('0')
-      setTotalTokens('0.00')
+      return {
+        totalWei: '0',
+        totalTokens: '0.00',
+      }
     }
   }, [recipients, amounts])
 
@@ -138,7 +117,7 @@ export function AirdropForm() {
     return response as number
   }
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: AirdropFormData) => {
     const tSenderAddress = chainsToTSender[chainId]['tsender']
     const approvedAmount = await getApprovedAmount(
       tSenderAddress,
