@@ -4,21 +4,23 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
 import React from 'react'
 import { chainsToTSender, erc20Abi, tsenderAbi } from '@/constants'
-import { useChainId, useConfig, useAccount } from 'wagmi'
-import { readContract } from '@wagmi/core'
+import { useChainId, useConfig, useAccount, useWriteContract } from 'wagmi'
+import { readContract, waitForTransactionReceipt } from '@wagmi/core'
 import { parseListInput } from '@/utils/parsetInput/parse-input'
-import { AirdropFormData } from '@/types/air-drop-form-data'
+import { AirdropFormData } from '@/types/airdrop-form-data'
 
 export function AirdropForm() {
   const chainId = useChainId()
   const config = useConfig()
   const account = useAccount()
+  const { data: hash, isPending, writeContractAsync } = useWriteContract()
+  const [isMounted, setIsMounted] = useState(false)
 
   const schema = yup.object().shape({
     tokenAddress: yup
@@ -65,6 +67,7 @@ export function AirdropForm() {
     handleSubmit,
     formState: { errors },
     watch,
+    setValue,
   } = useForm({
     resolver: yupResolver(schema),
     defaultValues: {
@@ -75,8 +78,75 @@ export function AirdropForm() {
     },
   })
 
+  const tokenAddress = watch('tokenAddress')
   const recipients = watch('recipients')
   const amounts = watch('amounts')
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (isMounted) {
+      const savedData = localStorage.getItem('airdropFormData')
+      if (savedData) {
+        const { tokenAddress, recipients, amounts, tokenName } =
+          JSON.parse(savedData)
+        if (tokenAddress) setValue('tokenAddress', tokenAddress)
+        if (recipients) setValue('recipients', recipients)
+        if (amounts) setValue('amounts', amounts)
+        if (tokenName) setValue('tokenName', tokenName)
+      }
+    }
+  }, [isMounted, setValue])
+
+  // Save form data to localStorage whenever inputs change (client-side only)
+  useEffect(() => {
+    if (isMounted) {
+      const formData = { tokenAddress, recipients, amounts }
+      localStorage.setItem('airdropFormData', JSON.stringify(formData))
+    }
+  }, [isMounted, tokenAddress, recipients, amounts])
+
+  // Fetch token name when tokenAddress changes (client-side only)
+  useEffect(() => {
+    const fetchTokenName = async () => {
+      if (
+        isMounted &&
+        tokenAddress &&
+        /^0x[0-9A-Fa-f]{40}$/.test(tokenAddress)
+      ) {
+        try {
+          const tokenName = await readContract(config, {
+            abi: erc20Abi,
+            address: tokenAddress as `0x${string}`,
+            functionName: 'name',
+          })
+          setValue('tokenName', tokenName as string)
+          // Update localStorage with tokenName
+          localStorage.setItem(
+            'airdropFormData',
+            JSON.stringify({ tokenAddress, recipients, amounts, tokenName })
+          )
+        } catch (error) {
+          console.error('Error fetching token name:', error)
+          setValue('tokenName', '')
+          localStorage.setItem(
+            'airdropFormData',
+            JSON.stringify({ tokenAddress, recipients, amounts, tokenName: '' })
+          )
+        }
+      } else if (isMounted) {
+        setValue('tokenName', '')
+        localStorage.setItem(
+          'airdropFormData',
+          JSON.stringify({ tokenAddress, recipients, amounts, tokenName: '' })
+        )
+      }
+    }
+
+    fetchTokenName()
+  }, [isMounted, tokenAddress, config, setValue, recipients, amounts])
 
   const { totalWei, totalTokens } = useMemo(() => {
     const recipientArray = parseListInput(recipients)
@@ -118,12 +188,51 @@ export function AirdropForm() {
   }
 
   const onSubmit = async (data: AirdropFormData) => {
+    const { tokenAddress } = data
     const tSenderAddress = chainsToTSender[chainId]['tsender']
-    const approvedAmount = await getApprovedAmount(
-      tSenderAddress,
-      data.tokenAddress
-    )
-    console.log(approvedAmount)
+    const approvedAmount = await getApprovedAmount(tSenderAddress, tokenAddress)
+
+    if (approvedAmount < Number(totalWei)) {
+      const approvalHash = await writeContractAsync({
+        abi: erc20Abi,
+        address: tokenAddress as `0x${string}`,
+        functionName: 'approve',
+        args: [tSenderAddress as `0x${string}`, BigInt(Number(totalWei))],
+      })
+
+      const approvalReceipt = await waitForTransactionReceipt(config, {
+        hash: approvalHash,
+      })
+      console.log('Approval confirmed', approvalReceipt)
+
+      await writeContractAsync({
+        abi: tsenderAbi,
+        address: tSenderAddress as `0x${string}`,
+        functionName: 'airdropERC20',
+        args: [
+          tokenAddress,
+          parseListInput(recipients),
+          parseListInput(amounts),
+          BigInt(Number(totalWei)),
+        ],
+      })
+    } else {
+      await writeContractAsync({
+        abi: tsenderAbi,
+        address: tSenderAddress as `0x${string}`,
+        functionName: 'airdropERC20',
+        args: [
+          tokenAddress,
+          parseListInput(recipients),
+          parseListInput(amounts),
+          BigInt(Number(totalWei)),
+        ],
+      })
+    }
+  }
+
+  if (!isMounted) {
+    return null
   }
 
   return (
@@ -191,17 +300,18 @@ export function AirdropForm() {
                 type='text'
                 {...register('tokenName')}
                 className='w-40 bg-gray-50 border-gray-300 text-right text-lg py-2'
+                readOnly
               />
             </div>
             <div className='flex justify-between'>
               <span>Amount (wei):</span>
-              <span className='text-right w-40 text-lg font-semibold'>
+              <span className='w-56 text-right text-lg font-semibold'>
                 {totalWei}
               </span>
             </div>
             <div className='flex justify-between'>
               <span>Amount (tokens):</span>
-              <span className='text-right w-40 text-lg font-semibold'>
+              <span className='w-40 text-right text-lg font-semibold'>
                 {totalTokens}
               </span>
             </div>
@@ -209,9 +319,10 @@ export function AirdropForm() {
         </div>
         <Button
           type='submit'
-          className='w-full bg-black text-white hover:bg-gray-800 transition-colors duration-300 text-lg py-3'
+          className='w-full bg-black text-white hover:bg-gray-800 transition-colors duration-300 text-lg py-3 cursor-pointer'
+          disabled={isPending}
         >
-          Send Tokens
+          {isPending ? 'Processing...' : 'Send Tokens'}
         </Button>
       </div>
     </form>
