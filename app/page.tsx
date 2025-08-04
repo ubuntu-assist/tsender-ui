@@ -4,7 +4,7 @@ import { AirdropForm } from '@/components/airdrop-form'
 import { useAccount } from 'wagmi'
 import { useState, useEffect } from 'react'
 
-export function HomeContent() {
+function HomeContent() {
   const { isConnected } = useAccount()
   const [isMounted, setIsMounted] = useState(false)
 
